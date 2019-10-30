@@ -1,0 +1,13 @@
+# Clode - Interface to the GSL ODE solver.
+
+## Usage
+
+## Installation
+
+## Author
+
+* Lewis Grozinger (l.grozinger2@ncl.ac.uk)
+
+## Copyright
+
+Copyright (c) 2019 Lewis Grozinger (l.grozinger2@ncl.ac.uk)
