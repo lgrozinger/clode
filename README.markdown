@@ -1,4 +1,4 @@
-# Clode - Interface to the GSL ODE solver.
+# CLODE - Interface to the GSL ODE solver.
 
 ## Usage
 
