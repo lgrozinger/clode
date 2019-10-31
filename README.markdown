@@ -8,7 +8,8 @@ Ensure that quicklisp can find `CLODE`. (e.g. `git clone` into your `quicklisp/l
 
 Then in an instance of Common Lisp: 
 
-```CL-USER> (ql:quickload :clode)
+```
+CL-USER> (ql:quickload :clode)
 To load "clode":
   Load 1 ASDF system:
     clode
@@ -27,7 +28,6 @@ CL-USER> (clode:with-ode-system (vanderpol u v v (- (* μ v (- 1 (* u u))) u) μ
 99.000000 -1.839039 0.076957
 100.000000 -1.758888 0.083643
 0
-CL-USER> 
 ```
 
 The second command reproduces the example of the 'Van Der Pol' oscillator from the GSL documentation.
@@ -36,7 +36,7 @@ Additional arguments can be given to `INTEGRATE` in order to make use of a subse
 
 ## Installation
 
-CLODE makes use of GSL library. In particular, `libgslcblas` is required. The source code can be obtained [[here][https://www.gnu.org/software/gsl/doc/html/intro.html#obtaining-gsl]. Alternatively, install `libgsl` with your package manager.
+CLODE makes use of GSL library. In particular, `libgslcblas` is required. The source code can be obtained [here(https://www.gnu.org/software/gsl/doc/html/intro.html#obtaining-gsl)]. Alternatively, install `libgsl` with your package manager.
 
 ## Author
 
