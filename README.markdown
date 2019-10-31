@@ -36,7 +36,7 @@ Additional arguments can be given to `INTEGRATE` in order to make use of a subse
 
 ## Installation
 
-CLODE makes use of GSL library. In particular, `libgslcblas` is required. The source code can be obtained [here(https://www.gnu.org/software/gsl/doc/html/intro.html#obtaining-gsl)]. Alternatively, install `libgsl` with your package manager.
+CLODE makes use of GSL library. In particular, `libgslcblas` is required. The source code can be obtained [here](https://www.gnu.org/software/gsl/doc/html/intro.html#obtaining-gsl). Alternatively, install `libgsl` with your package manager.
 
 ## Author
 
