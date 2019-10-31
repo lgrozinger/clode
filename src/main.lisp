@@ -41,13 +41,13 @@
 (defun dependent-variables (in-system)
   "Collect the dependent variables for the system."
   (loop for variable in (variables in-system)
-     when (not (atom (equation variable in-system)))
+     when (not (numberp (equation variable in-system)))
      collect variable))
 
 (defun parameters (in-system)
   "Collect the parameters for the system."
   (loop for variable in (variables in-system)
-     when (atom (equation variable in-system))
+     when (numberp (equation variable in-system))
      collect variable))
 
 (defun equation (for-var in-system)
