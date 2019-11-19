@@ -7,7 +7,9 @@
            :integrate))
 (in-package :clode)
 
+;; put your libgsl shared library here
 (define-foreign-library libgsl
+  (:unix "/usr/local/lib/libgsl.so.25.0.0")
   (t (:default "libgslcblas")))
 
 (use-foreign-library libgsl)
@@ -161,17 +163,16 @@
 (defun integrate (gsl-system initial-state
                   &key
                     (out-file t)
-                    (from-to (cons 0.d0 1.d1))
+                    (start 0.d0)
+                    (end 1.d1)
                     (steps 100)
                     (method *rk8pd*)
                     (abserr 1.d-6)
-                    (relerr 0.d0))
+                    (relerr 1.d-2))
 
   (let ((d (foreign-slot-value gsl-system 'odes 'dimension)))
     (with-foreign-objects ((y :double d) (time :double))
-      (let* ((start (coerce (car from-to) 'double-float))
-             (end (coerce (cdr from-to) 'double-float))
-             (step-size (/ (- end start) steps))
+      (let  ((step-size (/ (- end start) steps))
              (driver (gsl-odeiv2-driver-alloc-y-new
                       gsl-system
                       method
@@ -187,24 +188,33 @@
         ;; set the initial time
         (setf (mem-ref time :double) start)
 
-        ;; the integration loop
-        (loop
-           for next-time = (+ start step-size)
-           then (+ (mem-ref time :double) step-size)
-           with status = 0
-           until (or (> next-time end) (not (eql status 0)))
-           do
-             (setf status (gsl-odeiv2-driver-apply driver time next-time y))
+        ;; termination test
+        (flet ((endedp (next-time)
+                 (if (> (- end start) 0)
+                     (> next-time end)
+                     (< next-time end))))
+          ;; the integration loop
+          (loop
+             for next-time = (+ start step-size)
+             then (+ (mem-ref time :double) step-size)
+             with status = 0
+             until (or (endedp next-time) (not (eql status 0)))
+             do
+               (setf status (gsl-odeiv2-driver-apply driver time next-time y))
+               
+               (case status
+                 (0 (format out-file "~&~,6f ~{~,6f~^ ~}~%"
+                            (mem-ref time :double)
+                            (loop for i below d collect (mem-aref y :double i))))
+                 (otherwise (format t "~&The integrator failed with status ~A~%"
+                                    status)
+                            (return)))
 
-             (case status
-               (0 (format out-file "~&~,6f ~{~,6f~^ ~}~%"
-                          (mem-ref time :double)
-                          (loop for i below d collect (mem-aref y :double i))))
-               (otherwise (format t "~&The integrator failed with status ~A~%"
-                                  status)
-                          (return)))
+             finally (gsl-odeiv2-driver-free driver))
 
-           finally (gsl-odeiv2-driver-free driver))))))
+          (cons
+           (mem-ref time :double)
+           (loop for i below d collect (mem-aref y :double i))))))))
              
              
       
