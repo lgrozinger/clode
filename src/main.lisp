@@ -4,7 +4,8 @@
   (:export :*lotka-volterra*
            :*rk23* :*rk4* :*rk45* :*rkck* :*rk8pd* :*msadams*
            :with-ode-system
-           :integrate))
+           :integrate
+           :with))
 (in-package :clode)
 
 ;; put your libgsl shared library here
@@ -20,6 +21,7 @@
 ;; E.g. Lotka-Volterra
 (defvar *lotka-volterra* '(x (- (* ɑ x) (* β x y))
                            y (- (* β x y) (* ɣ y))
+                           with
                            ɑ 10.0
                            β 0.1
                            ɣ 10.0)
@@ -60,26 +62,38 @@
   (next-time :double)
   (y (:pointer :double)))
 
+;; GSL driver set minimum step
+(defcfun "gsl_odeiv2_driver_set_hmin" :int
+  (d :pointer)
+  (hmin :double))
+
 ;; GSL driver free function
 (defcfun "gsl_odeiv2_driver_free" :int
   (d :pointer))
 
+(defun without (in-system)
+  "Return a new list without the 'with' separator between equations and parameters"
+  (loop for x in in-system
+     unless (and (symbolp x) (string= (symbol-name x) (symbol-name with)))
+     collect x))
 
 (defun variables (in-system)
   "Collect the variables (including parameters) for the system."
-  (loop for (var form) on in-system by #'cddr collect var))
+  (loop for (var form) on (without in-system) by #'cddr collect var))
 
 (defun dependent-variables (in-system)
   "Collect the dependent variables for the system."
   (loop for variable in (variables in-system)
-     when (not (numberp (equation variable in-system)))
+     when (not (member variable (parameters in-system)))
      collect variable))
 
 (defun parameters (in-system)
   "Collect the parameters for the system."
-  (loop for variable in (variables in-system)
-     when (numberp (equation variable in-system))
-     collect variable))
+  (flet ((withp (x)
+           (and (symbolp x) (string= (symbol-name x) "clode::with"))))
+    (loop for item in in-system for i below (length in-system)
+       until (withp item)
+       finally (return (variables (subseq in-system i))))))
 
 (defun equation (for-var in-system)
   "Get the equation for the delta of a variable."
@@ -128,13 +142,13 @@
        (declare (ignorable ,time ,params))
        
        ;; convert the system to a progn of SETF forms
-       ,@(loop for (lhs rhs) on system by #'cddr when (member y lhs)
+       ,@(loop for (lhs rhs) on (without system) by #'cddr when (member y lhs)
             collect (list 'setf (substitute dydt y lhs) rhs))
 
        ;; finally return the GSL_SUCCESS code
        0)))
 
-(defmacro with-ode-system ((name &rest system) &body body)
+(defmacro with-ode-system ((name system) &body body)
   "Construct a gsl_odeiv2_system for system, bind to name and execute body."
   (with-gensyms (foreign-params odefun)
     (let ((params (parameters system)))
@@ -147,7 +161,7 @@
               collect
                 (list 'setf
                       (list 'mem-aref foreign-params :double i)
-                      (coerce (getf system param) 'double-float)))
+                      (coerce (eval (getf (without system) param)) 'double-float)))
          
          ;; set the ODE callback and Jacobian for GSL ODE system foreign struct
          (with-foreign-slots ((function jacobian dimension params)
@@ -162,7 +176,6 @@
 
 (defun integrate (gsl-system initial-state
                   &key
-                    (out-file t)
                     (start 0.d0)
                     (end 1.d1)
                     (steps 100)
@@ -180,6 +193,9 @@
                       abserr
                       relerr)))
 
+        ;; set the step size minimum for the driver to something reasonable
+        (gsl-odeiv2-driver-set-hmin driver 1.d-12)
+        
         ;; set the initial state in the foreign array y
         (loop for i below d
            do (setf (mem-aref y :double i)
@@ -201,20 +217,13 @@
              until (or (endedp next-time) (not (eql status 0)))
              do
                (setf status (gsl-odeiv2-driver-apply driver time next-time y))
-               
-               (case status
-                 (0 (format out-file "~&~,6f ~{~,6f~^ ~}~%"
-                            (mem-ref time :double)
-                            (loop for i below d collect (mem-aref y :double i))))
-                 (otherwise (format t "~&The integrator failed with status ~A~%"
-                                    status)
-                            (return)))
-
-             finally (gsl-odeiv2-driver-free driver))
-
-          (cons
-           (mem-ref time :double)
-           (loop for i below d collect (mem-aref y :double i))))))))
+               (if (not (eq status 0))
+                   (format t "~&The integrator failed with status ~A~%" status))
+             collect
+               (cons (mem-ref time :double)
+                     (loop for i below d collect (mem-aref y :double i)))
+             finally
+               (gsl-odeiv2-driver-free driver)))))))
              
              
       
