@@ -10,8 +10,7 @@
 
 ;; put your libgsl shared library here
 (define-foreign-library libgsl
-  (:unix "/usr/local/lib/libgsl.so.25.0.0")
-  (t (:default "libgslcblas")))
+  (t (:default "libgsl")))
 
 (use-foreign-library libgsl)
 
@@ -115,7 +114,9 @@
            (cond ((eql x old) new)
                  ((listp x) (recursive-replace new old x))
                  (t x))))
-    (mapcar #'replacer form)))
+    (if (listp form)
+        (mapcar #'replacer form)
+        (replacer form))))
 
 (defun state-variable-index (definition)
   (loop
@@ -153,38 +154,43 @@
      finally (return equations)))
 
 (defmacro integrate (&rest definition)    
-  (with-gensyms (callback system-name time y dydt params)
-    (let* ((ys (state-variable-index definition))
-           (ps (parameter-index definition))
+  (with-gensyms (callback
+                 system-name
+                 f-time
+                 f-y
+                 f-dydt
+                 f-params)
+    (let* ((ps (parameter-index definition))
+           (ys (state-variable-index definition))
            (equations
             (substitute-symbol-for-foreign
-             ps
-             params
-             (substitute-symbol-for-foreign ys y (equations-clause definition)))))
+              ps
+              f-params
+              (substitute-symbol-for-foreign
+               ys
+               f-y
+               (equations-clause definition)))))
 
       `(progn
-         (defcallback ,callback :int ((,time :double)
-                                      (,y (:pointer :double))
-                                      (,dydt (:pointer :double))
-                                      (,params (:pointer :double)))
-           (declare (ignorable ,time ,params))
-
+         (defcallback ,callback :int ((,f-time :double)
+                                      (,f-y (:pointer :double))
+                                      (,f-dydt (:pointer :double))
+                                      (,f-params (:pointer :double)))
+           (declare (ignorable ,f-time ,f-params))
            ,@(loop
                 for (lhs _ rhs) on equations by #'cdddr
-                collect (list
-                         'setf
-                         `(mem-aref ,dydt :double ,(getf ys lhs))
-                         rhs))
+                collect `(setf (mem-aref ,f-dydt :double
+                                         ,(getf ys lhs))
+                               ,rhs))
            0)
 
          (with-foreign-objects ((,system-name '(:struct gsl-odeiv2-system))
-                                (,params :double ,(/ (length ps) 2)))
+                                 (,f-params :double ,(/ (length ps) 2)))
            ;; populate the foreign allocated parameter array
            ,@(loop
                 for (parameter i) on ps by #'cddr
-                collect `(setf
-                          (mem-aref ,params :double ,i)
-                          ,(value-of-variable parameter definition)))
+                collect `(setf (mem-aref ,f-params :double ,i)
+                               ,(value-of-variable parameter definition)))
 
            ;; set the ODE callback and Jacobian for GSL ODE system foreign struct
            (with-foreign-slots ((function jacobian dimension params)
@@ -193,13 +199,15 @@
              (setf function (callback ,callback)
                    jacobian (null-pointer)
                    dimension ,(/ (length ys) 2)
-                   params ,params))
-
-           (integrate-1 ,system-name
-                        '(1.d2 1.d1)
-                        :start ,(first (from-to-clause definition))
-                        :end ,(third (from-to-clause definition))
-                        :steps ,(first (by-clause definition))))))))
+                   params ,f-params)
+            
+             (integrate-1 ,system-name
+                          '(,@(loop
+                                 for (variable _) on ys by #'cddr
+                                 collect (value-of-variable variable definition)))
+                          :start ,(first (from-to-clause definition))
+                          :end ,(third (from-to-clause definition))
+                          :steps ,(first (by-clause definition)))))))))
 
 (defun integrate-1 (gsl-system initial-state
                   &key
@@ -219,9 +227,6 @@
                       1.d-6
                       abserr
                       relerr)))
-
-        ;; set the step size minimum for the driver to something reasonable
-        (gsl-odeiv2-driver-set-hmin driver 1.d-12)
         
         ;; set the initial state in the foreign array y
         (loop for i below d
