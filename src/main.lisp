@@ -15,19 +15,6 @@
 
 (use-foreign-library libgsl)
 
-;; System definition as follows:
-;; ((variable . update-form) | (parameter . numberp))
-
-;; E.g. Lotka-Volterra
-(defvar *lotka-volterra* '(x (- (* ɑ x) (* β x y))
-                           y (- (* β x y) (* ɣ y))
-                           with
-                           ɑ 10.0
-                           β 0.1
-                           ɣ 10.0)
-  "An example ODE system for Lotka-Volterra dynamics.")
-
-
 ;; GSL CFFI DEFINITION
 
 ;; GSL stepping methods
@@ -71,110 +58,150 @@
 (defcfun "gsl_odeiv2_driver_free" :int
   (d :pointer))
 
-(defun without (in-system)
-  "Return a new list without the 'with' separator between equations and parameters"
-  (loop for x in in-system
-     unless (and (symbolp x) (string= (symbol-name x) (symbol-name with)))
-     collect x))
+(defun withp (token)
+  "Is the token 'with'"
+  (and
+   (symbolp token)
+   (string= (symbol-name token) (symbol-name 'with))))
 
-(defun variables (in-system)
-  "Collect the variables (including parameters) for the system."
-  (loop for (var form) on (without in-system) by #'cddr collect var))
+(defun fromp (token)
+  "Is the token 'from'"
+  (and
+   (symbolp token)
+   (string= (symbol-name token) (symbol-name 'from))))
 
-(defun dependent-variables (in-system)
-  "Collect the dependent variables for the system."
-  (loop for variable in (variables in-system)
-     when (not (member variable (parameters in-system)))
-     collect variable))
+(defun byp (token)
+  "Is the token 'by'"
+  (and
+   (symbolp token)
+   (string= (symbol-name token) (symbol-name 'by))))
 
-(defun parameters (in-system)
-  "Collect the parameters for the system."
-  (flet ((withp (x)
-           (and (symbolp x) (string= (symbol-name x) "clode::with"))))
-    (loop for item in in-system for i below (length in-system)
-       until (withp item)
-       finally (return (variables (subseq in-system i))))))
+       
+(defun equations-clause (definition)
+  (loop
+     for token in definition
+     until (or (withp token) (fromp token))
+     collect token))
 
-(defun equation (for-var in-system)
-  "Get the equation for the delta of a variable."
-  (getf in-system for-var))
+(defun variables-clause (definition)
+  (loop
+     with flag = NIL
+     for token in definition
+     until (fromp token)
+     when flag
+     collect token
+     do (setf flag (or flag (withp token)))))
 
-(defun equations (in-system)
-  "Get all the equations for the system."
-  (loop for variable in (variables in-system)
-     collect (equation variable in-system)))
+(defun from-to-clause (definition)
+  (loop
+     with flag = NIL
+     for token in definition
+     until (byp token)
+     when flag
+     collect token
+     do (setf flag (or flag (fromp token)))))
 
-(defun tree-substitute (new old tree)
-  "Replace (recursively) all instances of old with new in tree."
+(defun by-clause (definition)
+  (loop
+     with flag = NIL
+     for token in definition
+     when flag
+     collect token
+     do (setf flag (or flag (byp token)))))
+
+(defun recursive-replace (new old form)
+  "Replace (recursively) all instances of old with new in form."
   (flet ((replacer (x)
            (cond ((eql x old) new)
-                 ((listp x) (tree-substitute new old x))
+                 ((listp x) (recursive-replace new old x))
                  (t x))))
-    (mapcar #'replacer tree)))
+    (mapcar #'replacer form)))
 
-(defun substitute-variables (variables array-pointer system)
-  (let ((result system)
-        (dimension (length variables)))
-    
-    (flet ((array-ref (i) (list 'mem-aref array-pointer :double i)))
-      (loop for variable in variables for i below dimension
-         do (setf result (tree-substitute (array-ref i) variable result))))
+(defun state-variable-index (definition)
+  (loop
+     for (variable equal-sign form) on (equations-clause definition) by #'cdddr
+     for i = 0 then (+ 1 i)
+     collect variable
+     collect i))
 
-    result))
+(defun parameter-index (definition)
+  (loop
+     for (parameter equal-sign form) on (variables-clause definition) by #'cdddr
+     with i = 0
+     with index = '()
+     do (unless (member parameter (state-variable-index definition))
+          (setf index (append index (list parameter i)))
+          (setf i (+ 1 i)))
+     finally (return index)))
 
-(defmacro defode ((name) &body system)
-  "Define a CFFI callback for the ODE system."
-  (with-gensyms (time y dydt params)
-    ;; replace dependent-variables with mem-aref forms
-    (setf system (substitute-variables (dependent-variables system) y system))
+(defun value-of-variable (variable definition)
+  (let ((clause (variables-clause definition)))
+    (nth (+ 2 (position variable clause)) clause)))
 
-    ;; replace parameters with mem-aref forms
-    (setf system (substitute-variables (parameters system) params system))
+(defun substitute-symbol-for-foreign (variables foreign-pointer equations)
+  (loop
+     for (variable index) on variables by #'cddr
+     do (setf equations
+              (loop
+                 for (v _ form) on equations by #'cdddr
+                 collect v
+                 collect '=
+                 collect (recursive-replace
+                          `(mem-aref ,foreign-pointer :double ,index)
+                          variable
+                          form)))
+     finally (return equations)))
 
-    ;; replace occurence of the symbol TIME with the gensym'ed symbol
-    (setf system (tree-substitute time 'TIME system))
+(defmacro integrate (&rest definition)    
+  (with-gensyms (callback system-name time y dydt params)
+    (let* ((ys (state-variable-index definition))
+           (ps (parameter-index definition))
+           (equations
+            (substitute-symbol-for-foreign
+             ps
+             params
+             (substitute-symbol-for-foreign ys y (equations-clause definition)))))
 
-    ;; here is the callback definition
-    `(defcallback ,name :int ((,time :double)
-                              (,y (:pointer :double))
-                              (,dydt (:pointer :double))
-                              (,params :pointer))
-       (declare (ignorable ,time ,params))
-       
-       ;; convert the system to a progn of SETF forms
-       ,@(loop for (lhs rhs) on (without system) by #'cddr when (member y lhs)
-            collect (list 'setf (substitute dydt y lhs) rhs))
+      `(progn
+         (defcallback ,callback :int ((,time :double)
+                                      (,y (:pointer :double))
+                                      (,dydt (:pointer :double))
+                                      (,params (:pointer :double)))
+           (declare (ignorable ,time ,params))
 
-       ;; finally return the GSL_SUCCESS code
-       0)))
+           ,@(loop
+                for (lhs _ rhs) on equations by #'cdddr
+                collect (list
+                         'setf
+                         `(mem-aref ,dydt :double ,(getf ys lhs))
+                         rhs))
+           0)
 
-(defmacro with-ode-system ((name system) &body body)
-  "Construct a gsl_odeiv2_system for system, bind to name and execute body."
-  (with-gensyms (foreign-params odefun)
-    (let ((params (parameters system)))
-    `(progn
-       (defode (,odefun) ,@system)
-       (with-foreign-objects ((,name '(:struct gsl-odeiv2-system))
-                              (,foreign-params :double ,(length params)))
-         ;; populate the foreign allocated parameter array
-         ,@(loop for param in params for i below (length params)
-              collect
-                (list 'setf
-                      (list 'mem-aref foreign-params :double i)
-                      (coerce (eval (getf (without system) param)) 'double-float)))
-         
-         ;; set the ODE callback and Jacobian for GSL ODE system foreign struct
-         (with-foreign-slots ((function jacobian dimension params)
-                              ,name (:struct gsl-odeiv2-system))
+         (with-foreign-objects ((,system-name '(:struct gsl-odeiv2-system))
+                                (,params :double ,(/ (length ps) 2)))
+           ;; populate the foreign allocated parameter array
+           ,@(loop
+                for (parameter i) on ps by #'cddr
+                collect `(setf
+                          (mem-aref ,params :double ,i)
+                          ,(value-of-variable parameter definition)))
+
+           ;; set the ODE callback and Jacobian for GSL ODE system foreign struct
+           (with-foreign-slots ((function jacobian dimension params)
+                                ,system-name (:struct gsl-odeiv2-system))
            
-           (setf function (callback ,odefun)
-                 jacobian (null-pointer)
-                 dimension ,(length (dependent-variables system))
-                 params ,foreign-params))
-           
-         ,@body)))))
+             (setf function (callback ,callback)
+                   jacobian (null-pointer)
+                   dimension ,(/ (length ys) 2)
+                   params ,params))
 
-(defun integrate (gsl-system initial-state
+           (integrate-1 ,system-name
+                        '(1.d2 1.d1)
+                        :start ,(first (from-to-clause definition))
+                        :end ,(third (from-to-clause definition))
+                        :steps ,(first (by-clause definition))))))))
+
+(defun integrate-1 (gsl-system initial-state
                   &key
                     (start 0.d0)
                     (end 1.d1)
@@ -225,7 +252,13 @@
              finally
                (gsl-odeiv2-driver-free driver)))))))
              
-             
+;; E.g. Lotka-Volterra
+(defun example ()
+  "An example ODE system for Lotka-Volterra dynamics."
+  (integrate x = (- (* ɑ x) (* β x y))
+             y = (- (* β x y) (* ɣ y))
+             with x = 1.d2 y = 1.d1 ɑ = 1.d1 β = 1.d-1 ɣ = 1.d1
+             from 0.d0 to 1.d2 by 10000))
       
       
   

@@ -2,7 +2,7 @@
   :version "0.1.0"
   :author "Lewis Grozinger"
   :license ""
-  :depends-on ("gsll")
+  :depends-on ("cffi")
   :components ((:module "src"
                 :components
                 ((:file "main"))))
